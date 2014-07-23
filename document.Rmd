@@ -1,0 +1,180 @@
+-----------------------------------------------------
+title: "Practical ML: Prediction Assignment Write-up"
+output: html_document
+-----------------------------------------------------
+
+Practical ML: Prediction Assignment Write-up
+============================================
+```{r, echo=FALSE,message=FALSE, cache=TRUE}
+library(caret)
+library(ggplot2)
+```
+
+        
+Executive Summary
+--------------
+
+In this project, the goal is to use data from accelerometers placed on devices such as Jawbone Up, Nike FuelBand, and Fitbit; and quantify how well a certain physical activity has been done. Data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants have been collected. Participants were asked to perform barbell lifts correctly and incorrectly in 5 different ways.
+
+Throughout the project 3 datasets have been processed and generated:
+- **training** dataset: will be fetched from the file *pml-training.csv*. This dataset holds variable **classe** as outcome.
+- **testing** dataset: will be carved out from the above training dataset. A slice will be made so that testing dataset will be 30% in size of the training dataset. This dataset will be used to assess performance of the model chosen for prediction.
+- **submission** dataset: will be fetched from the file *pml-testing.csv*. This dataset does not contain variable **classe** as it is the unknown we are trying to estimate.
+
+**Training** and **Submission** dataset will undergo equal transformations throughout the whole code.
+
+**Training** dataset has been used to train 3 different predictive models: Random Forest, Support Vector Machine and stochastic gradient boosting. All models have been trained using a 2-fold cross validation approach on a subset of the data. Number of folds has been kept small for performance issues. 
+
+Random Forest have proved to be the best fitting model on the **testing** set, reaching a high accuracy on the testing set. RF has therefore been chosen as the model used to predict the results on the **Submission** dataset.
+
+Data Loading
+------------
+When reading data from the two .csv files parameter "na.string" has been specified as follows:
+
+```{r cache=TRUE}
+training <- read.csv("./input/pml-training.csv", na.string=c("","#DIV/0!","NA"))
+submission <- read.csv("./input/pml-testing.csv", na.string=c("","#DIV/0!","NA"))
+```
+This allows to get rid of meaningless values and to cast immediately all numeric columns to "numeric" class.
+
+Data Cleaning
+-------------
+
+For the sake of code readability, a permutation of the column order has been performed So that **classe** column and **problem_id** columns are the first in their dataset.
+
+```{r cache=TRUE}
+training <- training[,c(160,1:159)]
+submission <- submission[,c(160,1:159)]
+```
+
+
+Looking at column names, it's clear that some columns contain technical values relate to "data gathering" procedures. These columns have been dropped as they are not relevant for **classe** prediction:
+```{r cache=TRUE}
+selected <- !(colnames(training) %in% c("X",
+                                        "raw_timestamp_part_1",
+                                        "raw_timestamp_part_2",
+                                        "cvtd_timestamp",
+                                        "num_window",
+                                        "new_window"))
+training <- training[,selected]
+submission <- submission[,selected]
+```
+
+Finally, all remaining columns except **classe**,**user_name**,**problem_id**, have been converted to numeric class:
+
+```{r cache=TRUE}
+numeric_columns <- !(colnames(training) %in% c("classe","user_name","problem_id"))
+training[,numeric_columns] <- sapply(training[,numeric_columns],as.numeric)
+submission[,numeric_columns] <- sapply(submission[,numeric_columns],as.numeric)
+```
+
+Data Preprocessing
+------------------
+
+Dataset have been processed in order to drop the near zero variance predictors:
+
+```{r cache=TRUE}
+nzv <- nearZeroVar(training,saveMetrics = T)
+training <- training[,!nzv$nzv]
+submission <- submission[,!nzv$nzv]
+```
+
+In the second preprocessing step, **na** values have been imputed with a **knnImpute** procedure:
+```{r cache=TRUE}
+numeric_columns <- !(colnames(training) %in% c("classe","user_name","problem_id"))
+imputation <- preProcess(training[,numeric_columns],method = "knnImpute")
+training[,numeric_columns] <- predict(imputation,training[,numeric_columns])
+submission[,numeric_columns] <- predict(imputation,submission[,numeric_columns])
+```
+
+Lastly it should be checked if **user_name** is a predictor that should be retained. From the chart (see Appendix - Fig.1) it's clear that **classe** distribution is not evenly distributed among participants. Therefore **user_name** column can provide additional information to the classifiers in order to increase accuracy. 
+**Observation:** it is important to notice that by retaining **user_name** column, the resulting prediction model will be dependent on the user actually performing the exercise. Conversely, in case the objective was to define a general classifier able to classify **classe** independently from the user, **user_name** column should have been dropped.
+
+
+```{r echo=FALSE}
+tmp <- training
+```
+
+In order to use **user_name** as a predictor, dummy variables were calculated as follows:
+```{r cache=TRUE}
+dummies <- dummyVars(~., data = training[,-1])
+training <- data.frame(classe = training$classe, predict(dummies,training))
+submission <- data.frame(problem_id = submission$problem_id, predict(dummies,submission))
+```
+
+
+Training Framework
+------------------
+
+In order to train the models, data have been spit in a training set (70%) and a testing set (30%):
+```{r cache=TRUE}
+inTrain <- createDataPartition(training$classe, p = 0.7, list = F)
+testing <- training[-inTrain,]
+training <- training[inTrain,]
+```
+
+Training approach has been specified as 2-fold cross validation. Number of folds has been kept small for performance issues. Moreover given the high number of predictors, PCA preprocessing has been applied. Variance threshold for deciding how many columns should be retained has been set at 95%.
+```{r cache=TRUE}
+trainControl <- trainControl(method = "repeatedcv",
+                             number = 2,
+                             repeats = 1,
+                             preProcOptions = list(thresh = 0.95))
+```
+
+Models Training
+---------------
+
+Three different models have been trained on the training set. First a random forest, whose performance can be seen in Appendix.
+
+1) Random Forest
+```{r cache=TRUE, message=FALSE, warning=FALSE}
+modelFitRF <- train(training$classe~.,method = "rf", data = training, preProcess = "pca", trControl = trainControl)
+```
+
+2) Support vector machine
+```{r cache=TRUE, message=FALSE, warning=FALSE}
+modelFitSVM <- train(training$classe~.,method = "svmRadial", data = training, preProcess = "pca", trControl = trainControl)
+```
+
+
+3) Stochastic Gradient Boosting
+```{r cache=TRUE, message=FALSE, warning=FALSE}
+modelFitGBM <- train(training$classe~.,method = "gbm", data = training, preProcess = "pca", trControl = trainControl, verbose = F)
+```
+
+
+
+Model Comparison
+----------------
+
+From model comparison (see Appendix - Figure 5) it's clear that random forest has a much better performance. 
+```{r cache=TRUE, message=FALSE}
+resamp <- resamples(list(RF = modelFitRF, SVM = modelFitSVM, GBM = modelFitGBM))
+```
+
+Random Forest Accuracy
+----------------------
+
+For the sake of simplicity, no model blending techniques will be applied. The accuracy obtained with the Random Forest model is high enough for the purpose of the project. Therefore we can check the accuracy on the testing set:
+```{r cache=TRUE, message=FALSE}
+confusionMatrix(predict(modelFitRF,testing),testing$classe)
+```
+
+
+And finally save results for submission:
+
+```{r cache=TRUE, message=FALSE}
+answers <- predict(modelFitRF,submission)
+write.csv(answers,file="results.csv")
+```
+
+Appendix
+--------
+
+```{r cache=TRUE,echo=FALSE}
+qplot(data=tmp,classe,facets=~user_name,fill=classe,main="Figure 1 - Distrbution of classe among users")
+plot(modelFitRF,main="Figure 2 - Random Forest")
+plot(modelFitSVM,main="Figure 3 - Support Vector Machine")
+plot(modelFitGBM,main="Figure 4 - Stochastic Gradient Boosting")
+bwplot(resamp,main="Figure 5 - Model comparison")
+```
